@@ -6,6 +6,7 @@
 #include <sstream>
 #include <getopt.h>
 #include <sys/un.h>
+#include <netdb.h>
 
 std::string client_path; // For later cleanup
 
@@ -83,17 +84,23 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        sockaddr_in* addr = (sockaddr_in*)&server_addr;
-        addr->sin_family = AF_INET;
-        addr->sin_port = htons(port);
+        struct addrinfo hints{}, *res;
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_DGRAM;
 
-        if (inet_pton(AF_INET, host.c_str(), &addr->sin_addr) <= 0) {
-            std::cerr << "Invalid address / Address not supported\n";
+        int status = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
+        if (status != 0) {
+            std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
             return 1;
         }
 
-        addr_len = sizeof(sockaddr_in);
+        std::memcpy(&server_addr, res->ai_addr, res->ai_addrlen);
+        addr_len = res->ai_addrlen;
+
         std::cout << "Using UDP to " << host << ":" << port << "\n";
+
+        freeaddrinfo(res); // cleanup
+
     }
 
     while (true) {

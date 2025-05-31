@@ -4,6 +4,7 @@
 #include <arpa/inet.h>
 #include <sys/socket.h>
 #include <sstream>
+#include <netdb.h> 
 
 int main(int argc, char* argv[]) {
     if (argc != 3) {
@@ -21,14 +22,22 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    sockaddr_in server_addr{};
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
+    struct addrinfo hints{}, *res;
+    hints.ai_family = AF_INET;          // IPv4
+    hints.ai_socktype = SOCK_DGRAM;     // UDP
 
-    if (inet_pton(AF_INET, server_ip, &server_addr.sin_addr) <= 0) {
-        std::cerr << "Invalid address / Address not supported\n";
+    int status = getaddrinfo(server_ip, std::to_string(port).c_str(), &hints, &res);
+    if (status != 0) {
+        std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
         return 1;
     }
+
+    sockaddr_storage server_addr{};
+    std::memcpy(&server_addr, res->ai_addr, res->ai_addrlen);
+    socklen_t addr_len = res->ai_addrlen;
+
+    freeaddrinfo(res);  // Clean up
+
 
     while (true) {
         std::cout << "Enter command (DELIVER <MOLECULE> <AMOUNT> | EXIT): ";

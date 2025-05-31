@@ -5,6 +5,7 @@
 #include <sys/socket.h>
 #include <getopt.h>
 #include <sys/un.h>
+#include <netdb.h>
 
 int main(int argc, char* argv[]) {
 
@@ -64,22 +65,34 @@ int main(int argc, char* argv[]) {
             return 1;
         }
 
-        sockaddr_in server_addr;
-        std::memset(&server_addr, 0, sizeof(server_addr));
-        server_addr.sin_family = AF_INET;
-        server_addr.sin_port = htons(port);
+        addrinfo hints{}, *res;
+        memset(&hints, 0, sizeof(hints));
+        hints.ai_family = AF_INET;
+        hints.ai_socktype = SOCK_STREAM;
 
-        if (inet_pton(AF_INET, host.c_str(), &server_addr.sin_addr) <= 0) {
-            std::cerr << "Invalid address / Address not supported\n";
+        int status = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
+        if (status != 0) {
+            std::cerr << "getaddrinfo: " << gai_strerror(status) << "\n";
             return 1;
         }
 
-        if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+        sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        if (sock < 0) {
+            perror("socket failed");
+            freeaddrinfo(res);
+            return 1;
+        }
+
+        if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
             perror("Connection failed");
+            freeaddrinfo(res);
             return 1;
         }
 
         std::cout << "Connected to server at " << host << ":" << port << "\n";
+        freeaddrinfo(res);
+
+
     }
 
     while (true) {

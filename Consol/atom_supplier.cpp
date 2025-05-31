@@ -3,6 +3,7 @@
 #include <unistd.h>
 #include <arpa/inet.h>
 #include <sys/socket.h>
+#include <netdb.h> // Required for getaddrinfo
 
 int main(int argc, char* argv[]) {
 
@@ -13,33 +14,35 @@ int main(int argc, char* argv[]) {
     }
 
     const char* server_ip = argv[1]; // Our server's address
-    int port = std::stoi(argv[2]);   // Our port
+    const char* port_str = argv[2];  // Our port (as string for getaddrinfo)
+
+    // Define the server's address using getaddrinfo:
+    struct addrinfo hints{}, *res;
+    hints.ai_family = AF_INET; // IPv4 only
+    hints.ai_socktype = SOCK_STREAM; // TCP
+
+    int status = getaddrinfo(server_ip, port_str, &hints, &res);
+    if (status != 0) {
+        std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
+        return 1;
+    }
 
     // Creating the socket TCP:
-    int sock = socket(AF_INET, SOCK_STREAM, 0);
+    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
     if (sock < 0) {
         perror("socket failed");
+        freeaddrinfo(res);
         return 1;
     }
 
-    // Define the server's address:
-    sockaddr_in server_addr;
-    std::memset(&server_addr, 0, sizeof(server_addr));
-    server_addr.sin_family = AF_INET;
-    server_addr.sin_port = htons(port);
-
-    int conversion_result = inet_pton(AF_INET, server_ip, &server_addr.sin_addr);
-    if (conversion_result <= 0) {
-        std::cerr << "Invalid address / Address not supported\n";
-        return 1;
-    }
-
-    if (connect(sock, (sockaddr*)&server_addr, sizeof(server_addr)) < 0) {
+    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0) {
         perror("Connection failed");
+        freeaddrinfo(res);
         return 1;
     }
 
-    std::cout << "Connected to server at " << server_ip << ":" << port << "\n";
+    std::cout << "Connected to server at " << server_ip << ":" << port_str << "\n";
+    freeaddrinfo(res); // We no longer need the addrinfo result
 
     while (true) {
         // Request a command from the user:
@@ -63,22 +66,13 @@ int main(int argc, char* argv[]) {
         }
 
         // Getting response from the server:
-        char response_buffer[1024] = {0};
-        ssize_t bytes_received = recv(sock, response_buffer, sizeof(response_buffer) - 1, 0);
-        if (bytes_received <= 0) {
-            std::cerr << "Failed to receive response from server\n";
+        unsigned int response = 0;
+        ssize_t bytes_received = recv(sock, &response, sizeof(response), 0);
+        if (bytes_received != sizeof(response)) {
+            std::cerr << "Failed to receive proper response from server\n";
             break;
         }
-
-        response_buffer[bytes_received] = '\0'; // Null-terminate the string
-
-        // Try to parse it as a number
-        try {
-            unsigned int count = std::stoul(response_buffer);
-            std::cout << "Server returned count: " << count << "\n";
-        } catch (...) {
-            std::cout << "[Server Message] " << response_buffer << "\n";
-        }
+        std::cout << "Server returned count: " << response << "\n";
     }
 
     close(sock);
