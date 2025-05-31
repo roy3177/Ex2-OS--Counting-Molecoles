@@ -145,7 +145,7 @@ int main(int argc, char* argv[]) {
         // Active waiting until one of the sockets will be ready for reading:
        int activity = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
         if (activity < 0 && shutdown_requested) {
-            break; // נקטע בגלל timeout או סיגנל אחר - נצא מהלולאה מיד
+            break; 
         }
         if (activity < 0) {
             perror("Select error");
