@@ -1,0 +1,220 @@
+        -:    0:Source:atom_warehouse.cpp
+        -:    0:Graph:atom_warehouse.gcno
+        -:    0:Data:atom_warehouse.gcda
+        -:    0:Runs:2
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <sys/select.h>
+        -:    7:#include <set>
+        -:    8:#include <algorithm>
+        -:    9:#include <signal.h>
+        -:   10:#include <sstream>
+        -:   11:
+        -:   12:bool shutdown_requested = false;
+        -:   13:
+    #####:   14:void handle_shutdown(int)
+        -:   15:{
+    #####:   16:    shutdown_requested = true;
+    #####:   17:}
+        -:   18:
+        2:   19:int main(int argc, char *argv[])
+        -:   20:{
+        2:   21:    signal(SIGPIPE, SIG_IGN);
+        2:   22:    signal(SIGINT, handle_shutdown);
+        -:   23:
+        2:   24:    unsigned long long hydrogen_count = 0;
+        2:   25:    unsigned long long oxygen_count = 0;
+        2:   26:    unsigned long long carbon_count = 0;
+        -:   27:
+        -:   28:    // The server is only getting the port (for now):
+        2:   29:    if (argc != 2)
+        -:   30:    {
+        1:   31:        std::cerr << "Usage: " << argv[0] << " <port>\n";
+        1:   32:        return 1;
+        -:   33:    }
+        -:   34:
+        -:   35:    // Convert the port from string to in   teger:
+        1:   36:    int port = std::stoi(argv[1]);
+        -:   37:
+        -:   38:    // Create the socket TCP:
+        1:   39:    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        1:   40:    if (server_fd < 0)
+        -:   41:    {
+    #####:   42:        perror("Socket failed");
+    #####:   43:        return 1;
+        -:   44:    }
+        -:   45:
+        -:   46:    // Define the address's structure of the server:
+        -:   47:    sockaddr_in address;
+        1:   48:    std::memset(&address, 0, sizeof(address));
+        1:   49:    address.sin_family = AF_INET;
+        1:   50:    address.sin_addr.s_addr = INADDR_ANY;
+        1:   51:    address.sin_port = htons(port);
+        -:   52:
+        -:   53:    // bind to the port:
+        1:   54:    int bind_result = bind(server_fd, (sockaddr *)&address, sizeof(address));
+        1:   55:    if (bind_result < 0)
+        -:   56:    {
+    #####:   57:        perror("bind failed");
+    #####:   58:        close(server_fd);
+    #####:   59:        return 1;
+        -:   60:    }
+        -:   61:
+        -:   62:    // Starts the listen action:
+        1:   63:    int listen_result = listen(server_fd, 5);
+        1:   64:    if (listen_result < 0)
+        -:   65:    {
+    #####:   66:        perror("Listen failed");
+    #####:   67:        close(server_fd);
+    #####:   68:        return 1;
+        -:   69:    }
+        1:   70:    std::cout << "Server is listening on port " << port << "...\n";
+        -:   71:
+        -:   72:    // Set of clients:
+        1:   73:    std::set<int> clients;
+        -:   74:
+        -:   75:    // Infinite loop-for IO MUX:
+       14:   76:    while (!shutdown_requested)
+        -:   77:    {
+        -:   78:        fd_set readfds;              // Struct that includes the sockets's list
+      221:   79:        FD_ZERO(&readfds);           // Starting from empty list
+       13:   80:        FD_SET(server_fd, &readfds); // Adding the listening socket to the readfds
+       13:   81:        int max_fd = server_fd;
+        -:   82:
+        -:   83:        // Adding all the clients:
+       24:   84:        for (int client_fd : clients)
+        -:   85:        {
+       11:   86:            FD_SET(client_fd, &readfds);
+       11:   87:            if (client_fd > max_fd)
+        -:   88:            {
+       11:   89:                max_fd = client_fd;
+        -:   90:            }
+        -:   91:        }
+        -:   92:
+        -:   93:        // Active waiting until one of the sockets will be ready for reading:
+       13:   94:        int activity = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
+      13*:   95:        if (activity < 0 && !shutdown_requested)
+        -:   96:        {
+    #####:   97:            perror("Select error");
+    #####:   98:            break;
+        -:   99:        }
+        -:  100:
+       13:  101:        std::set<int> disconnected;
+        -:  102:
+        -:  103:        // If a new connection is coming:
+       13:  104:        if (FD_ISSET(server_fd, &readfds))
+        -:  105:        {
+        -:  106:            sockaddr_in client_addr;
+        2:  107:            socklen_t client_len = sizeof(client_addr);
+        2:  108:            int new_client = accept(server_fd, (sockaddr *)&client_addr, &client_len);
+       2*:  109:            if (new_client < 0)
+        -:  110:            {
+    #####:  111:                perror("Accept failed");
+    #####:  112:                continue;
+        -:  113:            }
+        2:  114:            clients.insert(new_client);
+        2:  115:            std::cout << "[INFO] New client connected: " << inet_ntoa(client_addr.sin_addr) << "\n";
+        -:  116:        }
+        -:  117:
+       25:  118:        for (int client_fd : clients)
+        -:  119:        {
+       13:  120:            if (FD_ISSET(client_fd, &readfds))
+        -:  121:            {
+       11:  122:                char buffer[1024] = {0};
+       11:  123:                int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        -:  124:
+       11:  125:                if (bytes_received <= 0)
+        -:  126:                {
+        1:  127:                    std::cout << "[INFO] Client disconnected.\n";
+        1:  128:                    close(client_fd);
+        1:  129:                    disconnected.insert(client_fd);
+        7:  130:                    continue;
+        -:  131:                }
+        -:  132:
+       10:  133:                std::string command(buffer);
+       10:  134:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+       10:  135:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  136:
+        -:  137:                // Checking if the client request to exit;
+      10*:  138:                if (command == "EXIT")
+        -:  139:                {
+    #####:  140:                    close(client_fd);
+    #####:  141:                    disconnected.insert(client_fd);
+    #####:  142:                    continue;
+        -:  143:                }
+        -:  144:
+        -:  145:                // Checking if the client request to close all of th network:
+       10:  146:                if (command == "SHUTDOWN")
+        -:  147:                {
+        1:  148:                    std::cout << "[INFO] Shutdown command received from client.\n";
+        1:  149:                    shutdown_requested = true;
+        1:  150:                    close(client_fd);
+        1:  151:                    disconnected.insert(client_fd);
+        1:  152:                    break;
+        -:  153:                }
+        -:  154:
+        9:  155:                std::istringstream iss(command);
+        9:  156:                std::string action, atom_type;
+        9:  157:                long long amount = -1;
+        -:  158:
+        9:  159:                if (!(iss >> action >> atom_type >> amount))
+        -:  160:                {
+        3:  161:                    std::string error_msg = "ERROR: Usage: ADD <ATOM_TYPE> <POSITIVE_AMOUNT>\n";
+        3:  162:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        3:  163:                    continue;
+        3:  164:                }
+        -:  165:
+        6:  166:                if (action != "ADD" || amount <= 0)
+        -:  167:                {
+        2:  168:                    std::string error_msg = "ERROR: Invalid command or non-positive amount.\n";
+        2:  169:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        2:  170:                    continue;
+        2:  171:                }
+        -:  172:
+        4:  173:                unsigned long long *target = nullptr;
+        4:  174:                if (atom_type == "HYDROGEN")
+        -:  175:                {
+        1:  176:                    target = &hydrogen_count;
+        -:  177:                }
+        3:  178:                else if (atom_type == "OXYGEN")
+        -:  179:                {
+        1:  180:                    target = &oxygen_count;
+        -:  181:                }
+        2:  182:                else if (atom_type == "CARBON")
+        -:  183:                {
+        1:  184:                    target = &carbon_count;
+        -:  185:                }
+        -:  186:                else
+        -:  187:                {
+        1:  188:                    std::string error_msg = "ERROR: Unknown atom type. Use HYDROGEN, OXYGEN, or CARBON.\n";
+        1:  189:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        1:  190:                    continue;
+        1:  191:                }
+        -:  192:
+        3:  193:                *target += static_cast<unsigned long long>(amount);
+        3:  194:                std::cout << "[INFO] Atoms: H=" << hydrogen_count
+        3:  195:                          << ", O=" << oxygen_count
+        3:  196:                          << ", C=" << carbon_count << "\n";
+        -:  197:
+        3:  198:                unsigned int response = static_cast<unsigned int>(*target);
+        3:  199:                send(client_fd, &response, sizeof(response), 0);
+       28:  200:            }
+        -:  201:        }
+        -:  202:
+       15:  203:        for (int fd : disconnected)
+        -:  204:        {
+        2:  205:            clients.erase(fd);
+        -:  206:        }
+       13:  207:    }
+        -:  208:
+       1*:  209:    for (int fd : clients)
+        -:  210:    {
+    #####:  211:        close(fd);
+        -:  212:    }
+        1:  213:    close(server_fd);
+        1:  214:    std::cout << "[INFO] Server shut down.\n";
+        1:  215:    return 0;
+        1:  216:}
