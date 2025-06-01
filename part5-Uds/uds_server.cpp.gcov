@@ -1,0 +1,651 @@
+        -:    0:Source:uds_server.cpp
+        -:    0:Graph:uds_server.gcno
+        -:    0:Data:uds_server.gcda
+        -:    0:Runs:5
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <sys/select.h>
+        -:    7:#include <set>
+        -:    8:#include <algorithm>
+        -:    9:#include <signal.h>
+        -:   10:#include <sstream>
+        -:   11:#include <getopt.h>
+        -:   12:#include <errno.h>
+        -:   13:#include <sys/un.h>
+        -:   14:
+        -:   15:int tcp_port = -1;
+        -:   16:int udp_port = -1;
+        -:   17:int timeout_seconds = 0;
+        -:   18:
+        -:   19:// Variables for saving the pathes of the UDS:
+        -:   20:std::string stream_path;
+        -:   21:std::string datagram_path;
+        -:   22:
+        -:   23:bool shutdown_requested = false;
+        -:   24:
+        1:   25:void handle_shutdown(int)
+        -:   26:{
+        1:   27:    shutdown_requested = true;
+        1:   28:}
+        -:   29:
+        1:   30:void handle_timeout(int)
+        -:   31:{
+        1:   32:    std::cout << "[INFO] Timeout reached. Shutting down.\n";
+        1:   33:    shutdown_requested = true;
+        1:   34:}
+        -:   35:
+        5:   36:int main(int argc, char *argv[])
+        -:   37:{
+        5:   38:    signal(SIGPIPE, SIG_IGN);
+        5:   39:    signal(SIGINT, handle_shutdown);
+        -:   40:
+        5:   41:    unsigned long long hydrogen_count = 0;
+        5:   42:    unsigned long long oxygen_count = 0;
+        5:   43:    unsigned long long carbon_count = 0;
+        -:   44:
+        -:   45:    int opt;
+       35:   46:    while ((opt = getopt(argc, argv, "o:c:h:t:T:U:s:d:")) != -1)
+        -:   47:    {
+       31:   48:        switch (opt)
+        -:   49:        {
+        3:   50:        case 'o':
+        3:   51:            oxygen_count = std::stoull(optarg);
+        3:   52:            break;
+        3:   53:        case 'c':
+        3:   54:            carbon_count = std::stoull(optarg);
+        3:   55:            break;
+        2:   56:        case 'h':
+        2:   57:            hydrogen_count = std::stoull(optarg);
+        2:   58:            break;
+        5:   59:        case 't':
+        5:   60:            timeout_seconds = std::stoi(optarg);
+        5:   61:            break;
+        5:   62:        case 'T':
+        5:   63:            tcp_port = std::stoi(optarg);
+        5:   64:            break;
+        4:   65:        case 'U':
+        4:   66:            udp_port = std::stoi(optarg);
+        4:   67:            break;
+        4:   68:        case 's':
+        4:   69:            stream_path = optarg;
+        4:   70:            break;
+        4:   71:        case 'd':
+        4:   72:            datagram_path = optarg;
+        4:   73:            break;
+        1:   74:        default:
+        1:   75:            std::cerr << "Usage: " << argv[0] << " -T <tcp_port> -U <udp_port> [-t <timeout>] [-o <oxygen>] [-c <carbon>] [-h <hydrogen>]\n";
+        1:   76:            return 1;
+        -:   77:        }
+        -:   78:    }
+        -:   79:
+        4:   80:    if (timeout_seconds > 0)
+        -:   81:    {
+        4:   82:        signal(SIGALRM, handle_timeout);
+        4:   83:        alarm(timeout_seconds);
+        -:   84:    }
+        -:   85:
+        4:   86:    if ((tcp_port == -1 || udp_port == -1) && stream_path.empty() && datagram_path.empty())
+        -:   87:    {
+        1:   88:        std::cerr << "[ERROR] Must provide at least TCP/UDP or UDS stream/datagram options.\n";
+        1:   89:        return 1;
+        -:   90:    }
+        -:   91:
+        -:   92:    // Create the socket TCP:
+        3:   93:    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        3:   94:    if (server_fd < 0)
+        -:   95:    {
+    #####:   96:        perror("Socket failed");
+    #####:   97:        return 1;
+        -:   98:    }
+        -:   99:
+        -:  100:    // Create the UDP socket:
+        3:  101:    int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        3:  102:    if (udp_fd < 0)
+        -:  103:    {
+    #####:  104:        perror("UDP socket failed");
+    #####:  105:        return 1;
+        -:  106:    }
+        -:  107:
+        -:  108:    // Create UDS STREAM socket
+        3:  109:    int uds_stream_fd = -1;
+        3:  110:    if (!stream_path.empty())
+        -:  111:    {
+        3:  112:        uds_stream_fd = socket(AF_UNIX, SOCK_STREAM, 0);
+        3:  113:        if (uds_stream_fd < 0)
+        -:  114:        {
+    #####:  115:            perror("UDS stream socket failed");
+    #####:  116:            return 1;
+        -:  117:        }
+        -:  118:
+        -:  119:        sockaddr_un stream_addr;
+        3:  120:        std::memset(&stream_addr, 0, sizeof(stream_addr));
+        3:  121:        stream_addr.sun_family = AF_UNIX;
+        3:  122:        std::strncpy(stream_addr.sun_path, stream_path.c_str(), sizeof(stream_addr.sun_path) - 1);
+        -:  123:
+        3:  124:        unlink(stream_path.c_str()); // remove any existing socket file
+        3:  125:        if (bind(uds_stream_fd, (sockaddr *)&stream_addr, sizeof(stream_addr)) < 0)
+        -:  126:        {
+    #####:  127:            perror("UDS stream bind failed");
+    #####:  128:            return 1;
+        -:  129:        }
+        -:  130:
+        3:  131:        if (listen(uds_stream_fd, 5) < 0)
+        -:  132:        {
+    #####:  133:            perror("UDS stream listen failed");
+    #####:  134:            return 1;
+        -:  135:        }
+        -:  136:
+        3:  137:        std::cout << "[INFO] UDS STREAM socket bound to " << stream_path << "\n";
+        -:  138:    }
+        -:  139:
+        -:  140:    // Create UDS DATAGRAM socket
+        3:  141:    int uds_dgram_fd = -1;
+        3:  142:    if (!datagram_path.empty())
+        -:  143:    {
+        3:  144:        uds_dgram_fd = socket(AF_UNIX, SOCK_DGRAM, 0);
+        3:  145:        if (uds_dgram_fd < 0)
+        -:  146:        {
+    #####:  147:            perror("UDS datagram socket failed");
+    #####:  148:            return 1;
+        -:  149:        }
+        -:  150:
+        -:  151:        sockaddr_un dgram_addr;
+        3:  152:        std::memset(&dgram_addr, 0, sizeof(dgram_addr));
+        3:  153:        dgram_addr.sun_family = AF_UNIX;
+        3:  154:        std::strncpy(dgram_addr.sun_path, datagram_path.c_str(), sizeof(dgram_addr.sun_path) - 1);
+        -:  155:
+        3:  156:        unlink(datagram_path.c_str());
+        3:  157:        if (bind(uds_dgram_fd, (sockaddr *)&dgram_addr, sizeof(dgram_addr)) < 0)
+        -:  158:        {
+    #####:  159:            perror("UDS datagram bind failed");
+    #####:  160:            return 1;
+        -:  161:        }
+        -:  162:
+        3:  163:        std::cout << "[INFO] UDS DATAGRAM socket bound to " << datagram_path << "\n";
+        -:  164:    }
+        -:  165:
+        -:  166:    // Define the address's structure of the server:
+        -:  167:    sockaddr_in address;
+        3:  168:    std::memset(&address, 0, sizeof(address));
+        3:  169:    address.sin_family = AF_INET;
+        3:  170:    address.sin_addr.s_addr = INADDR_ANY;
+        3:  171:    address.sin_port = htons(tcp_port);
+        -:  172:
+        -:  173:    sockaddr_in udp_addr;
+        3:  174:    std::memset(&udp_addr, 0, sizeof(udp_addr));
+        3:  175:    udp_addr.sin_family = AF_INET;
+        3:  176:    udp_addr.sin_addr.s_addr = INADDR_ANY;
+        3:  177:    udp_addr.sin_port = htons(udp_port); // same port as TCP
+        -:  178:
+        -:  179:    // bind to the TCP :
+        3:  180:    int bind_result = bind(server_fd, (sockaddr *)&address, sizeof(address));
+        3:  181:    if (bind_result < 0)
+        -:  182:    {
+    #####:  183:        perror("TCP bind failed");
+    #####:  184:        close(server_fd);
+    #####:  185:        return 1;
+        -:  186:    }
+        -:  187:
+        -:  188:    // bind to the UDP :
+        3:  189:    if (bind(udp_fd, (sockaddr *)&udp_addr, sizeof(udp_addr)) < 0)
+        -:  190:    {
+    #####:  191:        perror("UDP bind failed");
+    #####:  192:        close(server_fd);
+    #####:  193:        close(udp_fd);
+    #####:  194:        return 1;
+        -:  195:    }
+        -:  196:
+        -:  197:    // Starts the listen action:
+        3:  198:    int listen_result = listen(server_fd, 5);
+        3:  199:    if (listen_result < 0)
+        -:  200:    {
+    #####:  201:        perror("Listen failed");
+    #####:  202:        close(server_fd);
+    #####:  203:        return 1;
+        -:  204:    }
+        3:  205:    std::cout << "Server is listening on TCP port " << tcp_port
+        3:  206:              << " and UDP port " << udp_port << "...\n";
+        -:  207:
+        -:  208:    // Set of clients:
+        3:  209:    std::set<int> clients;
+        -:  210:
+        -:  211:    // Infinite loop-for IO MUX:
+       34:  212:    while (!shutdown_requested)
+        -:  213:    {
+        -:  214:        fd_set readfds;              // Struct that includes the sockets's list
+      561:  215:        FD_ZERO(&readfds);           // Starting from empty list
+       33:  216:        FD_SET(server_fd, &readfds); // Adding the listening socket to the readfds
+       33:  217:        int max_fd = server_fd;
+       33:  218:        FD_SET(udp_fd, &readfds);
+        -:  219:
+       33:  220:        if (uds_stream_fd != -1)
+        -:  221:        {
+       33:  222:            FD_SET(uds_stream_fd, &readfds);
+       33:  223:            if (uds_stream_fd > max_fd)
+        -:  224:            {
+       33:  225:                max_fd = uds_stream_fd;
+        -:  226:            }
+        -:  227:        }
+        -:  228:
+       33:  229:        if (uds_dgram_fd != -1)
+        -:  230:        {
+       33:  231:            FD_SET(uds_dgram_fd, &readfds);
+       33:  232:            if (uds_dgram_fd > max_fd)
+        -:  233:            {
+       33:  234:                max_fd = uds_dgram_fd;
+        -:  235:            }
+        -:  236:        }
+        -:  237:
+       33:  238:        FD_SET(STDIN_FILENO, &readfds);
+       33:  239:        if (STDIN_FILENO > max_fd)
+        -:  240:        {
+    #####:  241:            max_fd = STDIN_FILENO;
+        -:  242:        }
+        -:  243:
+       33:  244:        if (udp_fd > max_fd)
+        -:  245:        {
+    #####:  246:            max_fd = udp_fd;
+        -:  247:        }
+        -:  248:
+        -:  249:        // Adding all the clients:
+       45:  250:        for (int client_fd : clients)
+        -:  251:        {
+       12:  252:            FD_SET(client_fd, &readfds);
+       12:  253:            if (client_fd > max_fd)
+        -:  254:            {
+       12:  255:                max_fd = client_fd;
+        -:  256:            }
+        -:  257:        }
+        -:  258:
+        -:  259:        // Active waiting until one of the sockets will be ready for reading:
+       33:  260:        int activity = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
+       33:  261:        if (activity < 0 && shutdown_requested)
+        -:  262:        {
+        2:  263:            break;
+        -:  264:        }
+       31:  265:        if (activity < 0)
+        -:  266:        {
+    #####:  267:            perror("Select error");
+    #####:  268:            break;
+        -:  269:        }
+        -:  270:
+       31:  271:        std::set<int> disconnected;
+        -:  272:
+        -:  273:        // If a new connection is coming:
+       31:  274:        if (FD_ISSET(server_fd, &readfds))
+        -:  275:        {
+        -:  276:            sockaddr_in client_addr;
+        2:  277:            socklen_t client_len = sizeof(client_addr);
+        2:  278:            int new_client = accept(server_fd, (sockaddr *)&client_addr, &client_len);
+       2*:  279:            if (new_client < 0)
+        -:  280:            {
+    #####:  281:                perror("Accept failed");
+    #####:  282:                continue;
+        -:  283:            }
+        2:  284:            clients.insert(new_client);
+        2:  285:            std::cout << "[INFO] New client connected: " << inet_ntoa(client_addr.sin_addr) << "\n";
+        -:  286:        }
+        -:  287:
+       31:  288:        if (uds_stream_fd != -1 && FD_ISSET(uds_stream_fd, &readfds))
+        -:  289:        {
+        -:  290:            sockaddr_un client_addr;
+        1:  291:            socklen_t client_len = sizeof(client_addr);
+        1:  292:            int new_client = accept(uds_stream_fd, (sockaddr *)&client_addr, &client_len);
+        1:  293:            if (new_client < 0)
+        -:  294:            {
+    #####:  295:                perror("UDS stream accept failed");
+        -:  296:            }
+        -:  297:            else
+        -:  298:            {
+        1:  299:                clients.insert(new_client);
+        1:  300:                std::cout << "[INFO] New UDS STREAM client connected.\n";
+        -:  301:            }
+        -:  302:        }
+        -:  303:
+       31:  304:        if (FD_ISSET(udp_fd, &readfds))
+        -:  305:        {
+        8:  306:            char buffer[1024] = {0};
+        -:  307:            sockaddr_in client_addr;
+        8:  308:            socklen_t client_len = sizeof(client_addr);
+        8:  309:            ssize_t bytes_received = recvfrom(udp_fd, buffer, sizeof(buffer) - 1, 0,
+        -:  310:                                              (sockaddr *)&client_addr, &client_len);
+        -:  311:
+        8:  312:            if (bytes_received > 0)
+        -:  313:            {
+        8:  314:                buffer[bytes_received] = '\0';
+        8:  315:                std::string command(buffer);
+        -:  316:
+        8:  317:                if (timeout_seconds > 0)
+        -:  318:                {
+        8:  319:                    alarm(timeout_seconds);
+        -:  320:                }
+        -:  321:
+        8:  322:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+        8:  323:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  324:
+        8:  325:                std::istringstream iss(command);
+        8:  326:                std::string action, molecule;
+        -:  327:                unsigned long long amount;
+        -:  328:
+        8:  329:                if (!(iss >> action >> molecule >> amount) || action != "DELIVER" || amount <= 0)
+        -:  330:                {
+        1:  331:                    std::string response = "CANNOT_DELIVER";
+        1:  332:                    sendto(udp_fd, response.c_str(), response.size(), 0,
+        -:  333:                           (sockaddr *)&client_addr, client_len);
+        1:  334:                    continue;
+        1:  335:                }
+        -:  336:
+        -:  337:                // The requiers molecules:
+        7:  338:                unsigned long long need_H = 0, need_O = 0, need_C = 0;
+        7:  339:                if (molecule == "WATER")
+        -:  340:                {
+        2:  341:                    need_H = 2 * amount;
+        2:  342:                    need_O = 1 * amount;
+        -:  343:                }
+        5:  344:                else if (molecule == "CARBON DIOXIDE")
+        -:  345:                {
+    #####:  346:                    need_C = 1 * amount;
+    #####:  347:                    need_O = 2 * amount;
+        -:  348:                }
+        5:  349:                else if (molecule == "GLUCOSE")
+        -:  350:                {
+        1:  351:                    need_C = 6 * amount;
+        1:  352:                    need_H = 12 * amount;
+        1:  353:                    need_O = 6 * amount;
+        -:  354:                }
+        4:  355:                else if (molecule == "ALCOHOL")
+        -:  356:                {
+        1:  357:                    need_C = 2 * amount;
+        1:  358:                    need_H = 6 * amount;
+        1:  359:                    need_O = 1 * amount;
+        -:  360:                }
+        -:  361:                else
+        -:  362:                {
+        3:  363:                    std::string response = "CANNOT_DELIVER";
+        3:  364:                    sendto(udp_fd, response.c_str(), response.size(), 0,
+        -:  365:                           (sockaddr *)&client_addr, client_len);
+        3:  366:                    continue;
+        -:  367:                    ;
+        3:  368:                }
+        -:  369:
+        4:  370:                if (hydrogen_count >= need_H && oxygen_count >= need_O && carbon_count >= need_C)
+        -:  371:                {
+        3:  372:                    hydrogen_count -= need_H;
+        3:  373:                    oxygen_count -= need_O;
+        3:  374:                    carbon_count -= need_C;
+        -:  375:
+        3:  376:                    std::cout << "[INFO] UDP request received: DELIVER " << molecule << "\n";
+        3:  377:                    std::cout << "[INFO] Atoms: H=" << hydrogen_count
+        3:  378:                              << ", O=" << oxygen_count
+        3:  379:                              << ", C=" << carbon_count << "\n";
+        -:  380:
+        3:  381:                    std::string response = "DELIVERED";
+        3:  382:                    sendto(udp_fd, response.c_str(), response.size(), 0,
+        -:  383:                           (sockaddr *)&client_addr, client_len);
+        3:  384:                }
+        -:  385:                else
+        -:  386:                {
+        1:  387:                    std::string response = "CANNOT_DELIVER";
+        1:  388:                    sendto(udp_fd, response.c_str(), response.size(), 0,
+        -:  389:                           (sockaddr *)&client_addr, client_len);
+        1:  390:                }
+       20:  391:            }
+        -:  392:        }
+        -:  393:
+       27:  394:        if (FD_ISSET(STDIN_FILENO, &readfds))
+        -:  395:        {
+        6:  396:            std::string line;
+        6:  397:            std::getline(std::cin, line);
+        6:  398:            std::istringstream iss(line);
+        -:  399:
+        6:  400:            std::string cmd, drink;
+        6:  401:            if (!(iss >> cmd >> drink) || cmd != "GEN")
+        -:  402:            {
+        2:  403:                std::cout << "[ERROR] Invalid command. Use: GEN <SOFT DRINK|VODKA|CHAMPAGNE>\n";
+        2:  404:                continue;
+        -:  405:            }
+        -:  406:
+        4:  407:            int can_make = 0;
+        4:  408:            if (drink == "SOFT" || drink == "SOFT_DRINK" || drink == "SOFTDRINK")
+        -:  409:            {
+        1:  410:                unsigned long long h = hydrogen_count / 14;
+        1:  411:                unsigned long long o = oxygen_count / 9;
+        1:  412:                unsigned long long c = carbon_count / 7;
+        1:  413:                can_make = std::min({h, o, c});
+        1:  414:                std::cout << "Can make " << can_make << " SOFT DRINK(s)\n";
+        -:  415:            }
+        3:  416:            else if (drink == "VODKA")
+        -:  417:            {
+        1:  418:                unsigned long long h = hydrogen_count / 20;
+        1:  419:                unsigned long long o = oxygen_count / 8;
+        1:  420:                unsigned long long c = carbon_count / 8;
+        1:  421:                can_make = std::min({h, o, c});
+        1:  422:                std::cout << "Can make " << can_make << " VODKA(s)\n";
+        -:  423:            }
+        2:  424:            else if (drink == "CHAMPAGNE")
+        -:  425:            {
+        1:  426:                unsigned long long h = hydrogen_count / 8;
+        1:  427:                unsigned long long o = oxygen_count / 4;
+        1:  428:                unsigned long long c = carbon_count / 3;
+        1:  429:                can_make = std::min({h, o, c});
+        1:  430:                std::cout << "Can make " << can_make << " CHAMPAGNE(s)\n";
+        -:  431:            }
+        -:  432:            else
+        -:  433:            {
+        1:  434:                std::cout << "[ERROR] Unknown drink type.\n";
+        -:  435:            }
+       12:  436:        }
+        -:  437:
+       25:  438:        if (uds_dgram_fd != -1 && FD_ISSET(uds_dgram_fd, &readfds))
+        -:  439:        {
+        2:  440:            char buffer[1024] = {0};
+        -:  441:            sockaddr_un client_addr;
+        2:  442:            socklen_t client_len = sizeof(client_addr);
+        2:  443:            ssize_t bytes_received = recvfrom(uds_dgram_fd, buffer, sizeof(buffer) - 1, 0,
+        -:  444:                                              (sockaddr *)&client_addr, &client_len);
+        -:  445:
+        2:  446:            if (bytes_received > 0)
+        -:  447:            {
+        2:  448:                buffer[bytes_received] = '\0';
+        2:  449:                std::string command(buffer);
+        -:  450:
+        2:  451:                if (timeout_seconds > 0)
+        -:  452:                {
+        2:  453:                    alarm(timeout_seconds);
+        -:  454:                }
+        -:  455:
+        2:  456:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+        2:  457:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  458:
+        2:  459:                std::istringstream iss(command);
+        2:  460:                std::string action, molecule;
+        -:  461:                unsigned long long amount;
+        -:  462:
+       2*:  463:                if (!(iss >> action >> molecule >> amount) || action != "DELIVER" || amount <= 0)
+        -:  464:                {
+    #####:  465:                    std::string response = "CANNOT_DELIVER";
+    #####:  466:                    sendto(uds_dgram_fd, response.c_str(), response.size(), 0,
+        -:  467:                           (sockaddr *)&client_addr, client_len);
+    #####:  468:                    continue;
+    #####:  469:                }
+        -:  470:
+        -:  471:                // The requiers molecules:
+        2:  472:                unsigned long long need_H = 0, need_O = 0, need_C = 0;
+        2:  473:                if (molecule == "WATER")
+        -:  474:                {
+        1:  475:                    need_H = 2 * amount;
+        1:  476:                    need_O = 1 * amount;
+        -:  477:                }
+        1:  478:                else if (molecule == "CARBON_DIOXIDE")
+        -:  479:                {
+    #####:  480:                    need_C = 1 * amount;
+    #####:  481:                    need_O = 2 * amount;
+        -:  482:                }
+        1:  483:                else if (molecule == "GLUCOSE")
+        -:  484:                {
+    #####:  485:                    need_C = 6 * amount;
+    #####:  486:                    need_H = 12 * amount;
+    #####:  487:                    need_O = 6 * amount;
+        -:  488:                }
+        1:  489:                else if (molecule == "ALCOHOL")
+        -:  490:                {
+    #####:  491:                    need_C = 2 * amount;
+    #####:  492:                    need_H = 6 * amount;
+    #####:  493:                    need_O = 1 * amount;
+        -:  494:                }
+        -:  495:                else
+        -:  496:                {
+        1:  497:                    std::string response = "CANNOT_DELIVER";
+        1:  498:                    sendto(uds_dgram_fd, response.c_str(), response.size(), 0,
+        -:  499:                           (sockaddr *)&client_addr, client_len);
+        1:  500:                    continue;
+        -:  501:                    ;
+        1:  502:                }
+        -:  503:
+        1:  504:                if (hydrogen_count >= need_H && oxygen_count >= need_O && carbon_count >= need_C)
+        -:  505:                {
+        1:  506:                    hydrogen_count -= need_H;
+        1:  507:                    oxygen_count -= need_O;
+        1:  508:                    carbon_count -= need_C;
+        -:  509:
+        1:  510:                    std::cout << "[INFO] UDS DATAGRAM request received: " << command << "\n";
+        1:  511:                    std::cout << "[INFO] Atoms: H=" << hydrogen_count
+        1:  512:                              << ", O=" << oxygen_count
+        1:  513:                              << ", C=" << carbon_count << "\n";
+        -:  514:
+        1:  515:                    std::string response = "DELIVERED";
+        1:  516:                    sendto(uds_dgram_fd, response.c_str(), response.size(), 0,
+        -:  517:                           (sockaddr *)&client_addr, client_len);
+        1:  518:                }
+        -:  519:                else
+        -:  520:                {
+    #####:  521:                    std::string response = "CANNOT_DELIVER";
+    #####:  522:                    sendto(uds_dgram_fd, response.c_str(), response.size(), 0,
+        -:  523:                           (sockaddr *)&client_addr, client_len);
+    #####:  524:                }
+        5:  525:            }
+        -:  526:        }
+        -:  527:
+       38:  528:        for (int client_fd : clients)
+        -:  529:        {
+       15:  530:            if (FD_ISSET(client_fd, &readfds))
+        -:  531:            {
+       12:  532:                char buffer[1024] = {0};
+       12:  533:                int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        -:  534:
+       12:  535:                if (bytes_received <= 0)
+        -:  536:                {
+        2:  537:                    std::cout << "[INFO] Client disconnected.\n";
+        2:  538:                    close(client_fd);
+        2:  539:                    disconnected.insert(client_fd);
+        7:  540:                    continue;
+        -:  541:                }
+        -:  542:
+       10:  543:                std::string command(buffer);
+        -:  544:
+       10:  545:                if (timeout_seconds > 0)
+        -:  546:                {
+       10:  547:                    alarm(timeout_seconds);
+        -:  548:                }
+        -:  549:
+       10:  550:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+       10:  551:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  552:
+        -:  553:                // Checking if the client request to exit;
+      10*:  554:                if (command == "EXIT")
+        -:  555:                {
+    #####:  556:                    close(client_fd);
+    #####:  557:                    disconnected.insert(client_fd);
+    #####:  558:                    continue;
+        -:  559:                }
+        -:  560:
+        -:  561:                // Checking if the client request to close all of th network:
+       10:  562:                if (command == "SHUTDOWN")
+        -:  563:                {
+        1:  564:                    std::cout << "[INFO] Shutdown command received from client.\n";
+        1:  565:                    shutdown_requested = true;
+        1:  566:                    close(client_fd);
+        1:  567:                    disconnected.insert(client_fd);
+        1:  568:                    break;
+        -:  569:                }
+        -:  570:
+        9:  571:                std::istringstream iss(command);
+        9:  572:                std::string action, atom_type;
+        9:  573:                long long amount = -1;
+        -:  574:
+        9:  575:                if (!(iss >> action >> atom_type >> amount))
+        -:  576:                {
+        2:  577:                    std::string error_msg = "ERROR: Usage: ADD <ATOM_TYPE> <POSITIVE_AMOUNT>\n";
+        2:  578:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        2:  579:                    continue;
+        2:  580:                }
+        -:  581:
+        7:  582:                if (action != "ADD" || amount <= 0)
+        -:  583:                {
+        1:  584:                    std::string error_msg = "ERROR: Invalid command or non-positive amount.\n";
+        1:  585:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        1:  586:                    continue;
+        1:  587:                }
+        -:  588:
+        6:  589:                unsigned long long *target = nullptr;
+        6:  590:                if (atom_type == "HYDROGEN")
+        -:  591:                {
+        2:  592:                    target = &hydrogen_count;
+        -:  593:                }
+        4:  594:                else if (atom_type == "OXYGEN")
+        -:  595:                {
+        1:  596:                    target = &oxygen_count;
+        -:  597:                }
+        3:  598:                else if (atom_type == "CARBON")
+        -:  599:                {
+        1:  600:                    target = &carbon_count;
+        -:  601:                }
+        -:  602:                else
+        -:  603:                {
+        2:  604:                    std::string error_msg = "ERROR: Unknown atom type. Use HYDROGEN, OXYGEN, or CARBON.\n";
+        2:  605:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        2:  606:                    continue;
+        2:  607:                }
+        -:  608:
+        4:  609:                *target += static_cast<unsigned long long>(amount);
+        4:  610:                std::cout << "[INFO] Atoms: H=" << hydrogen_count
+        4:  611:                          << ", O=" << oxygen_count
+        4:  612:                          << ", C=" << carbon_count << "\n";
+        -:  613:
+        4:  614:                std::string response = "SUCCESS: Atom added successfully.\n";
+        4:  615:                send(client_fd, response.c_str(), response.size(), 0);
+       25:  616:            }
+        -:  617:        }
+        -:  618:
+       27:  619:        for (int fd : disconnected)
+        -:  620:        {
+        3:  621:            clients.erase(fd);
+        -:  622:        }
+       31:  623:    }
+        -:  624:
+       3*:  625:    for (int fd : clients)
+        -:  626:    {
+    #####:  627:        close(fd);
+        -:  628:    }
+        -:  629:
+        3:  630:    close(server_fd);
+        3:  631:    close(udp_fd);
+        -:  632:
+        3:  633:    if (uds_stream_fd != -1)
+        -:  634:    {
+        3:  635:        close(uds_stream_fd);
+        3:  636:        unlink(stream_path.c_str());
+        -:  637:    }
+        -:  638:
+        3:  639:    if (uds_dgram_fd != -1)
+        -:  640:    {
+        3:  641:        close(uds_dgram_fd);
+        3:  642:        unlink(datagram_path.c_str());
+        -:  643:    }
+        -:  644:
+        3:  645:    std::cout << "[INFO] Server shut down.\n";
+        3:  646:    return 0;
+        -:  647:}

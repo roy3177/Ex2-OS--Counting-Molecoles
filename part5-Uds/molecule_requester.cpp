@@ -10,28 +10,32 @@
 
 std::string client_path; // For later cleanup
 
-
-int main(int argc, char* argv[]) {
+int main(int argc, char *argv[])
+{
     // Handling arguments: either <host> <port> OR -f <uds_path>
     std::string host;
     int port = -1;
     std::string uds_path;
     int opt;
 
-    while ((opt = getopt(argc, argv, "f:")) != -1) {
-        switch (opt) {
-            case 'f':
-                uds_path = optarg;
-                break;
-            default:
-                std::cerr << "Usage: " << argv[0] << " <host> <port> | -f <uds_path>\n";
-                return 1;
+    while ((opt = getopt(argc, argv, "f:")) != -1)
+    {
+        switch (opt)
+        {
+        case 'f':
+            uds_path = optarg;
+            break;
+        default:
+            std::cerr << "Usage: " << argv[0] << " <host> <port> | -f <uds_path>\n";
+            return 1;
         }
     }
 
     bool use_uds = !uds_path.empty();
-    if (!use_uds) {
-        if (optind + 2 > argc) {
+    if (!use_uds)
+    {
+        if (optind + 2 > argc)
+        {
             std::cerr << "Usage: " << argv[0] << " <host> <port> | -f <uds_path>\n";
             return 1;
         }
@@ -43,10 +47,12 @@ int main(int argc, char* argv[]) {
     sockaddr_storage server_addr{}; // Can be sockaddr_in or sockaddr_un
     socklen_t addr_len;
 
-    if (use_uds) {
-       // Create UNIX domain datagram socket (AF_UNIX + SOCK_DGRAM)
+    if (use_uds)
+    {
+        // Create UNIX domain datagram socket (AF_UNIX + SOCK_DGRAM)
         sock = socket(AF_UNIX, SOCK_DGRAM, 0);
-        if (sock < 0) {
+        if (sock < 0)
+        {
             perror("socket failed");
             return 1;
         }
@@ -62,24 +68,27 @@ int main(int argc, char* argv[]) {
         // Make sure the path doesn't already exist
         unlink(client_path.c_str());
 
-        if (bind(sock, (sockaddr*)&client_addr, sizeof(client_addr)) < 0) {
+        if (bind(sock, (sockaddr *)&client_addr, sizeof(client_addr)) < 0)
+        {
             perror("bind failed");
             return 1;
         }
 
         // Step 2: Define server address
-        sockaddr_un* addr = (sockaddr_un*)&server_addr;
+        sockaddr_un *addr = (sockaddr_un *)&server_addr;
         addr->sun_family = AF_UNIX;
         std::strncpy(addr->sun_path, uds_path.c_str(), sizeof(addr->sun_path) - 1);
         addr_len = sizeof(sockaddr_un);
 
         std::cout << "Using UNIX Domain Socket at " << uds_path << "\n";
-;
-    } 
-    else {
-        //Create the UDP socket:
+        ;
+    }
+    else
+    {
+        // Create the UDP socket:
         sock = socket(AF_INET, SOCK_DGRAM, 0);
-        if (sock < 0) {
+        if (sock < 0)
+        {
             perror("socket failed");
             return 1;
         }
@@ -89,7 +98,8 @@ int main(int argc, char* argv[]) {
         hints.ai_socktype = SOCK_DGRAM;
 
         int status = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
-        if (status != 0) {
+        if (status != 0)
+        {
             std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
             return 1;
         }
@@ -100,44 +110,47 @@ int main(int argc, char* argv[]) {
         std::cout << "Using UDP to " << host << ":" << port << "\n";
 
         freeaddrinfo(res); // cleanup
-
     }
 
-    while (true) {
+    while (true)
+    {
         std::cout << "Enter command (DELIVER <MOLECULE> <AMOUNT> | EXIT): ";
         std::string command;
         std::getline(std::cin, command);
 
-        if (command == "EXIT") {
+        if (command == "EXIT")
+        {
             std::cout << "Exiting.\n";
             break;
         }
 
         // Send the command to the server:
         ssize_t sent = sendto(sock, command.c_str(), command.size(), 0,
-                              (sockaddr*)&server_addr, addr_len);
-        if (sent < 0) {
+                              (sockaddr *)&server_addr, addr_len);
+        if (sent < 0)
+        {
             perror("sendto failed");
             break;
         }
 
-        //Get response from the server:
         // Get response from the server:
+        //  Get response from the server:
         char buffer[1024] = {0};
         ssize_t received = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, nullptr, nullptr);
-        if (received < 0) {
+        if (received < 0)
+        {
             perror("recvfrom failed");
             break;
         }
 
         buffer[received] = '\0';
         std::cout << "[Server Reply] " << buffer << "\n";
-
     }
 
     close(sock);
 
-    if (use_uds) {
+    if (use_uds)
+    {
         unlink(client_path.c_str()); // Cleanup the temporary UDS client socket
     }
 

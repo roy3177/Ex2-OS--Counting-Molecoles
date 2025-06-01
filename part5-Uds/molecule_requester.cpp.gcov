@@ -1,0 +1,162 @@
+        -:    0:Source:molecule_requester.cpp
+        -:    0:Graph:molecule_requester.gcno
+        -:    0:Data:molecule_requester.gcda
+        -:    0:Runs:2
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <sstream>
+        -:    7:#include <getopt.h>
+        -:    8:#include <sys/un.h>
+        -:    9:#include <netdb.h>
+        -:   10:
+        -:   11:std::string client_path; // For later cleanup
+        -:   12:
+        2:   13:int main(int argc, char *argv[])
+        -:   14:{
+        -:   15:    // Handling arguments: either <host> <port> OR -f <uds_path>
+        2:   16:    std::string host;
+        2:   17:    int port = -1;
+        2:   18:    std::string uds_path;
+        -:   19:    int opt;
+        -:   20:
+        3:   21:    while ((opt = getopt(argc, argv, "f:")) != -1)
+        -:   22:    {
+        1:   23:        switch (opt)
+        -:   24:        {
+        1:   25:        case 'f':
+        1:   26:            uds_path = optarg;
+        1:   27:            break;
+    #####:   28:        default:
+    #####:   29:            std::cerr << "Usage: " << argv[0] << " <host> <port> | -f <uds_path>\n";
+    #####:   30:            return 1;
+        -:   31:        }
+        -:   32:    }
+        -:   33:
+        2:   34:    bool use_uds = !uds_path.empty();
+        2:   35:    if (!use_uds)
+        -:   36:    {
+        1:   37:        if (optind + 2 > argc)
+        -:   38:        {
+    #####:   39:            std::cerr << "Usage: " << argv[0] << " <host> <port> | -f <uds_path>\n";
+    #####:   40:            return 1;
+        -:   41:        }
+        1:   42:        host = argv[optind];
+        2:   43:        port = std::stoi(argv[optind + 1]);
+        -:   44:    }
+        -:   45:
+        -:   46:    int sock;
+        2:   47:    sockaddr_storage server_addr{}; // Can be sockaddr_in or sockaddr_un
+        -:   48:    socklen_t addr_len;
+        -:   49:
+        2:   50:    if (use_uds)
+        -:   51:    {
+        -:   52:        // Create UNIX domain datagram socket (AF_UNIX + SOCK_DGRAM)
+        1:   53:        sock = socket(AF_UNIX, SOCK_DGRAM, 0);
+        1:   54:        if (sock < 0)
+        -:   55:        {
+    #####:   56:            perror("socket failed");
+    #####:   57:            return 1;
+        -:   58:        }
+        -:   59:
+        -:   60:        // Step 1: Bind to a temporary client path so server can reply
+        1:   61:        sockaddr_un client_addr{};
+        1:   62:        client_addr.sun_family = AF_UNIX;
+        -:   63:
+        -:   64:        // Unique client socket path using the process ID
+        1:   65:        client_path = "/tmp/molecule_requester_" + std::to_string(getpid()) + ".sock";
+        1:   66:        std::strncpy(client_addr.sun_path, client_path.c_str(), sizeof(client_addr.sun_path) - 1);
+        -:   67:
+        -:   68:        // Make sure the path doesn't already exist
+        1:   69:        unlink(client_path.c_str());
+        -:   70:
+        1:   71:        if (bind(sock, (sockaddr *)&client_addr, sizeof(client_addr)) < 0)
+        -:   72:        {
+    #####:   73:            perror("bind failed");
+    #####:   74:            return 1;
+        -:   75:        }
+        -:   76:
+        -:   77:        // Step 2: Define server address
+        1:   78:        sockaddr_un *addr = (sockaddr_un *)&server_addr;
+        1:   79:        addr->sun_family = AF_UNIX;
+        1:   80:        std::strncpy(addr->sun_path, uds_path.c_str(), sizeof(addr->sun_path) - 1);
+        1:   81:        addr_len = sizeof(sockaddr_un);
+        -:   82:
+        1:   83:        std::cout << "Using UNIX Domain Socket at " << uds_path << "\n";
+        -:   84:        ;
+        -:   85:    }
+        -:   86:    else
+        -:   87:    {
+        -:   88:        // Create the UDP socket:
+        1:   89:        sock = socket(AF_INET, SOCK_DGRAM, 0);
+        1:   90:        if (sock < 0)
+        -:   91:        {
+    #####:   92:            perror("socket failed");
+    #####:   93:            return 1;
+        -:   94:        }
+        -:   95:
+        1:   96:        struct addrinfo hints{}, *res;
+        1:   97:        hints.ai_family = AF_INET;
+        1:   98:        hints.ai_socktype = SOCK_DGRAM;
+        -:   99:
+        1:  100:        int status = getaddrinfo(host.c_str(), std::to_string(port).c_str(), &hints, &res);
+        1:  101:        if (status != 0)
+        -:  102:        {
+    #####:  103:            std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
+    #####:  104:            return 1;
+        -:  105:        }
+        -:  106:
+        1:  107:        std::memcpy(&server_addr, res->ai_addr, res->ai_addrlen);
+        1:  108:        addr_len = res->ai_addrlen;
+        -:  109:
+        1:  110:        std::cout << "Using UDP to " << host << ":" << port << "\n";
+        -:  111:
+        1:  112:        freeaddrinfo(res); // cleanup
+        -:  113:    }
+        -:  114:
+        -:  115:    while (true)
+        -:  116:    {
+       12:  117:        std::cout << "Enter command (DELIVER <MOLECULE> <AMOUNT> | EXIT): ";
+       12:  118:        std::string command;
+       12:  119:        std::getline(std::cin, command);
+        -:  120:
+       12:  121:        if (command == "EXIT")
+        -:  122:        {
+        2:  123:            std::cout << "Exiting.\n";
+        2:  124:            break;
+        -:  125:        }
+        -:  126:
+        -:  127:        // Send the command to the server:
+       10:  128:        ssize_t sent = sendto(sock, command.c_str(), command.size(), 0,
+        -:  129:                              (sockaddr *)&server_addr, addr_len);
+       10:  130:        if (sent < 0)
+        -:  131:        {
+    #####:  132:            perror("sendto failed");
+    #####:  133:            break;
+        -:  134:        }
+        -:  135:
+        -:  136:        // Get response from the server:
+        -:  137:        //  Get response from the server:
+       10:  138:        char buffer[1024] = {0};
+       10:  139:        ssize_t received = recvfrom(sock, buffer, sizeof(buffer) - 1, 0, nullptr, nullptr);
+       10:  140:        if (received < 0)
+        -:  141:        {
+    #####:  142:            perror("recvfrom failed");
+    #####:  143:            break;
+        -:  144:        }
+        -:  145:
+       10:  146:        buffer[received] = '\0';
+       10:  147:        std::cout << "[Server Reply] " << buffer << "\n";
+       22:  148:    }
+        -:  149:
+        2:  150:    close(sock);
+        -:  151:
+        2:  152:    if (use_uds)
+        -:  153:    {
+        1:  154:        unlink(client_path.c_str()); // Cleanup the temporary UDS client socket
+        -:  155:    }
+        -:  156:
+        2:  157:    return 0;
+        2:  158:}
