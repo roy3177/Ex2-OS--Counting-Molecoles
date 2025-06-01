@@ -161,7 +161,7 @@ int main(int argc, char* argv[]) {
                     need_H = 2 * amount;
                     need_O = 1 * amount;
                 }
-                else if (molecule == "CARBON DIOXIDE") {
+                else if (molecule == "CARBON_DIOXIDE") {
                     need_C = 1 * amount;
                     need_O = 2 * amount;
                 } 
@@ -222,7 +222,6 @@ int main(int argc, char* argv[]) {
 
                 // Checking if the client request to exit;
                 if (command == "EXIT") {
-                    std::cout << "[INFO] Client requested EXIT.\n";
                     close(client_fd);
                     disconnected.insert(client_fd);
                     continue;

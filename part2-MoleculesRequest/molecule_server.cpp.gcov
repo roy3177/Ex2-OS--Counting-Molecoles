@@ -1,0 +1,299 @@
+        -:    0:Source:molecule_server.cpp
+        -:    0:Graph:molecule_server.gcno
+        -:    0:Data:molecule_server.gcda
+        -:    0:Runs:3
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <sys/select.h>
+        -:    7:#include <set>
+        -:    8:#include <algorithm>
+        -:    9:#include <signal.h>
+        -:   10:#include <sstream>
+        -:   11:
+        -:   12:bool shutdown_requested = false;
+        -:   13:
+    #####:   14:void handle_shutdown(int) {
+    #####:   15:    shutdown_requested = true;
+    #####:   16:}
+        -:   17:
+        3:   18:int main(int argc, char* argv[]) {
+        3:   19:    signal(SIGPIPE, SIG_IGN); 
+        3:   20:    signal(SIGINT, handle_shutdown);
+        -:   21:
+        3:   22:    unsigned long long hydrogen_count = 0;
+        3:   23:    unsigned long long oxygen_count = 0;
+        3:   24:    unsigned long long carbon_count = 0;
+        -:   25:
+        -:   26:    // The server is only getting the port (for now):
+        3:   27:    if (argc != 2) {
+        2:   28:        std::cerr << "Usage: " << argv[0] << " <port>\n";
+        2:   29:        return 1;
+        -:   30:    }
+        -:   31:
+        -:   32:    // Convert the port from string to integer:
+        1:   33:    int port = std::stoi(argv[1]);
+        -:   34:
+        -:   35:    // Create the socket TCP:
+        1:   36:    int server_fd = socket(AF_INET, SOCK_STREAM, 0);
+        1:   37:    if (server_fd < 0) {
+    #####:   38:        perror("Socket failed");
+    #####:   39:        return 1;
+        -:   40:    }
+        -:   41:
+        -:   42:    // Create the UDP socket:
+        1:   43:    int udp_fd = socket(AF_INET, SOCK_DGRAM, 0);
+        1:   44:    if (udp_fd < 0) {
+    #####:   45:        perror("UDP socket failed");
+    #####:   46:        return 1;
+        -:   47:    }
+        -:   48:
+        -:   49:    // Define the address's structure of the server:
+        -:   50:    sockaddr_in address;
+        1:   51:    std::memset(&address, 0, sizeof(address));
+        1:   52:    address.sin_family = AF_INET;
+        1:   53:    address.sin_addr.s_addr = INADDR_ANY;
+        1:   54:    address.sin_port = htons(port);
+        -:   55:
+        -:   56:    sockaddr_in udp_addr;
+        1:   57:    std::memset(&udp_addr, 0, sizeof(udp_addr));
+        1:   58:    udp_addr.sin_family = AF_INET;
+        1:   59:    udp_addr.sin_addr.s_addr = INADDR_ANY;
+        1:   60:    udp_addr.sin_port = htons(port); // same port as TCP
+        -:   61:
+        -:   62:    //bind to the TCP :
+        1:   63:    int bind_result = bind(server_fd, (sockaddr *)&address, sizeof(address));
+        1:   64:    if (bind_result < 0){
+    #####:   65:        perror("TCP bind failed");
+    #####:   66:        close(server_fd);
+    #####:   67:        return 1;
+        -:   68:    }
+        -:   69:
+        -:   70:    //bind to the UDP :
+        1:   71:    if (bind(udp_fd, (sockaddr*)&udp_addr, sizeof(udp_addr)) < 0) {
+    #####:   72:        perror("UDP bind failed");
+    #####:   73:        close(server_fd);
+    #####:   74:        close(udp_fd);
+    #####:   75:        return 1;
+        -:   76:    }
+        -:   77:
+        -:   78:
+        -:   79:    // Starts the listen action:
+        1:   80:    int listen_result = listen(server_fd, 5);
+        1:   81:    if (listen_result < 0){
+    #####:   82:        perror("Listen failed");
+    #####:   83:        close(server_fd);
+    #####:   84:        return 1;
+        -:   85:    }
+        1:   86:    std::cout << "Server is listening on port " << port << "...\n";
+        -:   87:
+        -:   88:    // Set of clients:
+        1:   89:    std::set<int> clients;
+        -:   90:
+        -:   91:    // Infinite loop-for IO MUX:
+       21:   92:    while (!shutdown_requested) {
+        -:   93:        fd_set readfds; // Struct that includes the sockets's list
+      340:   94:        FD_ZERO(&readfds); // Starting from empty list
+       20:   95:        FD_SET(server_fd, &readfds); // Adding the listening socket to the readfds
+       20:   96:        int max_fd = server_fd;
+        -:   97:
+       20:   98:        FD_SET(udp_fd, &readfds);
+       20:   99:        if (udp_fd > max_fd) {
+       20:  100:            max_fd = udp_fd;
+        -:  101:        }
+        -:  102:
+        -:  103:
+        -:  104:        // Adding all the clients:
+       29:  105:        for (int client_fd : clients) {
+        9:  106:            FD_SET(client_fd, &readfds);
+        9:  107:            if (client_fd > max_fd){
+        9:  108:                max_fd = client_fd;
+        -:  109:            }
+        -:  110:        }
+        -:  111:
+        -:  112:        // Active waiting until one of the sockets will be ready for reading:
+       20:  113:        int activity = select(max_fd + 1, &readfds, nullptr, nullptr, nullptr);
+      20*:  114:        if (activity < 0 && !shutdown_requested) {
+    #####:  115:            perror("Select error");
+    #####:  116:            break;
+        -:  117:        }
+        -:  118:
+       20:  119:        std::set<int> disconnected;
+        -:  120:
+        -:  121:        // If a new connection is coming:
+       20:  122:        if (FD_ISSET(server_fd, &readfds)) {
+        -:  123:            sockaddr_in client_addr;
+        2:  124:            socklen_t client_len = sizeof(client_addr);
+        2:  125:            int new_client = accept(server_fd, (sockaddr*)&client_addr, &client_len);
+       2*:  126:            if (new_client < 0) {
+    #####:  127:                perror("Accept failed");
+    #####:  128:                continue;
+        -:  129:            }
+        2:  130:            clients.insert(new_client);
+        2:  131:            std::cout << "[INFO] New client connected: " << inet_ntoa(client_addr.sin_addr) << "\n";
+        -:  132:        }
+        -:  133:
+       20:  134:       if (FD_ISSET(udp_fd, &readfds)) {
+        9:  135:            char buffer[1024] = {0};
+        -:  136:            sockaddr_in client_addr;
+        9:  137:            socklen_t client_len = sizeof(client_addr);
+        9:  138:            ssize_t bytes_received = recvfrom(udp_fd, buffer, sizeof(buffer) - 1, 0,
+        -:  139:                                            (sockaddr*)&client_addr, &client_len);
+        -:  140:
+        9:  141:            if (bytes_received > 0) {
+        8:  142:                buffer[bytes_received] = '\0';
+        8:  143:                std::string command(buffer);
+        8:  144:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+        8:  145:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  146:
+        8:  147:                std::istringstream iss(command);
+        8:  148:                std::string action, molecule;
+        -:  149:                unsigned long long amount;
+        -:  150:
+       8*:  151:                if (!(iss >> action >> molecule >> amount) || action != "DELIVER" || amount <= 0) {
+    #####:  152:                    std::string response = "CANNOT_DELIVER";
+    #####:  153:                    sendto(udp_fd, response.c_str(), response.size(), 0, 
+        -:  154:                        (sockaddr*)&client_addr, client_len);
+    #####:  155:                    continue;
+    #####:  156:                }
+        -:  157:
+        -:  158:                // The requiers molecules:
+        8:  159:                unsigned long long need_H = 0, need_O = 0, need_C = 0;
+        8:  160:                if (molecule == "WATER") {
+        1:  161:                    need_H = 2 * amount;
+        1:  162:                    need_O = 1 * amount;
+        -:  163:                }
+        7:  164:                else if (molecule == "CARBON_DIOXIDE") {
+        1:  165:                    need_C = 1 * amount;
+        1:  166:                    need_O = 2 * amount;
+        -:  167:                } 
+        6:  168:                else if (molecule == "GLUCOSE") {
+        2:  169:                    need_C = 6 * amount;
+        2:  170:                    need_H = 12 * amount;
+        2:  171:                    need_O = 6 * amount;
+        -:  172:                } 
+        4:  173:                else if (molecule == "ALCOHOL") {
+        1:  174:                    need_C = 2 * amount;
+        1:  175:                    need_H = 6 * amount;
+        1:  176:                    need_O = 1 * amount;
+        -:  177:                } 
+        -:  178:                else {
+        3:  179:                    std::string response = "CANNOT_DELIVER";
+        3:  180:                    sendto(udp_fd, response.c_str(), response.size(), 0, 
+        -:  181:                        (sockaddr*)&client_addr, client_len);
+        3:  182:                    continue;;
+        3:  183:                }
+        -:  184:
+        5:  185:                if (hydrogen_count >= need_H && oxygen_count >= need_O && carbon_count >= need_C) {
+        5:  186:                    hydrogen_count -= need_H;
+        5:  187:                    oxygen_count -= need_O;
+        5:  188:                    carbon_count -= need_C;
+        -:  189:
+        5:  190:                    std::cout << "[INFO] UDP request received: DELIVER " << molecule << "\n";
+        5:  191:                    std::cout << "[INFO] Atoms: H=" << hydrogen_count 
+        5:  192:                            << ", O=" << oxygen_count 
+        5:  193:                            << ", C=" << carbon_count << "\n";
+        -:  194:
+        5:  195:                    std::string response = "DELIVERED";
+        5:  196:                    sendto(udp_fd, response.c_str(), response.size(), 0, 
+        -:  197:                        (sockaddr*)&client_addr, client_len);
+        5:  198:                } else {
+    #####:  199:                    std::string response = "CANNOT_DELIVER";
+    #####:  200:                    sendto(udp_fd, response.c_str(), response.size(), 0, 
+        -:  201:                        (sockaddr*)&client_addr, client_len);
+    #####:  202:                }
+       17:  203:            }
+        -:  204:        }
+        -:  205:
+        -:  206:
+       27:  207:        for (int client_fd : clients) {
+       11:  208:            if (FD_ISSET(client_fd, &readfds)) {
+        9:  209:                char buffer[1024] = {0};
+        9:  210:                int bytes_received = recv(client_fd, buffer, sizeof(buffer) - 1, 0);
+        -:  211:
+        9:  212:                if (bytes_received <= 0) {
+        1:  213:                    std::cout << "[INFO] Client disconnected.\n";
+        1:  214:                    close(client_fd);
+        1:  215:                    disconnected.insert(client_fd);
+        5:  216:                    continue;
+        -:  217:                }
+        -:  218:
+        8:  219:                std::string command(buffer);
+        8:  220:                command.erase(std::remove(command.begin(), command.end(), '\n'), command.end());
+        8:  221:                command.erase(std::remove(command.begin(), command.end(), '\r'), command.end());
+        -:  222:
+        -:  223:                // Checking if the client request to exit;
+       8*:  224:                if (command == "EXIT") {
+    #####:  225:                    std::cout << "[INFO] Client requested EXIT.\n";
+    #####:  226:                    close(client_fd);
+    #####:  227:                    disconnected.insert(client_fd);
+    #####:  228:                    continue;
+        -:  229:                }
+        -:  230:
+        -:  231:                // Checking if the client request to close all of th network:
+        8:  232:                if (command == "SHUTDOWN") {
+        1:  233:                    std::cout << "[INFO] Shutdown command received from client.\n";
+        1:  234:                    shutdown_requested = true;
+        1:  235:                    close(client_fd);
+        1:  236:                    disconnected.insert(client_fd);
+        1:  237:                    break;
+        -:  238:                }
+        -:  239:
+        7:  240:                std::istringstream iss(command);
+        7:  241:                std::string action, atom_type;
+        7:  242:                long long amount = -1;
+        -:  243:
+        7:  244:                if (!(iss >> action >> atom_type >> amount)) {
+        2:  245:                    std::string error_msg = "ERROR: Usage: ADD <ATOM_TYPE> <POSITIVE_AMOUNT>\n";
+        2:  246:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        2:  247:                    continue;
+        2:  248:                }
+        -:  249:
+        5:  250:                if (action != "ADD" || amount <= 0) {
+        1:  251:                    std::string error_msg = "ERROR: Invalid command or non-positive amount.\n";
+        1:  252:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        1:  253:                    continue;
+        1:  254:                }
+        -:  255:
+        4:  256:                unsigned long long* target = nullptr;
+        4:  257:                if (atom_type == "HYDROGEN") {
+        1:  258:                    target = &hydrogen_count;
+        -:  259:                }
+        3:  260:                else if (atom_type == "OXYGEN") {
+        1:  261:                    target = &oxygen_count;
+        -:  262:                }
+        2:  263:                else if (atom_type == "CARBON") {
+        1:  264:                    target = &carbon_count;
+        -:  265:                }
+        -:  266:                else {
+        1:  267:                    std::string error_msg = "ERROR: Unknown atom type. Use HYDROGEN, OXYGEN, or CARBON.\n";
+        1:  268:                    send(client_fd, error_msg.c_str(), error_msg.size(), 0);
+        1:  269:                    continue;
+        1:  270:                }
+        -:  271:
+        3:  272:                *target += static_cast<unsigned long long>(amount);
+        3:  273:                std::cout << "[INFO] Atoms: H=" << hydrogen_count
+        3:  274:                          << ", O=" << oxygen_count
+        3:  275:                          << ", C=" << carbon_count << "\n";
+        -:  276:
+        3:  277:                unsigned int response = static_cast<unsigned int>(*target);
+        3:  278:                send(client_fd, &response, sizeof(response), 0);
+       20:  279:            }
+        -:  280:        }
+        -:  281:
+       19:  282:        for (int fd : disconnected) {
+        2:  283:            clients.erase(fd);
+        -:  284:        }
+       20:  285:    }
+        -:  286:
+       1*:  287:    for (int fd : clients){
+    #####:  288:        close(fd);
+        -:  289:    }
+        1:  290:    close(server_fd);
+        1:  291:    close(udp_fd);
+        -:  292:
+        1:  293:    std::cout << "[INFO] Server shut down.\n";
+        1:  294:    return 0;
+        1:  295:}

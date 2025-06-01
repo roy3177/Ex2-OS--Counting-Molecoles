@@ -1,0 +1,80 @@
+        -:    0:Source:molecule_requester.cpp
+        -:    0:Graph:molecule_requester.gcno
+        -:    0:Data:molecule_requester.gcda
+        -:    0:Runs:1
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <sstream>
+        -:    7:#include <netdb.h> 
+        -:    8:
+        1:    9:int main(int argc, char* argv[]) {
+        1:   10:    if (argc != 3) {
+    #####:   11:        std::cerr << "Usage: " << argv[0] << " <host> <port>\n";
+    #####:   12:        return 1;
+        -:   13:    }
+        -:   14:
+        1:   15:    const char* server_ip = argv[1];
+        1:   16:    int port = std::stoi(argv[2]);
+        -:   17:
+        -:   18:    //Create the UDP socket:
+        1:   19:    int sock = socket(AF_INET, SOCK_DGRAM, 0);
+        1:   20:    if (sock < 0) {
+    #####:   21:        perror("socket failed");
+    #####:   22:        return 1;
+        -:   23:    }
+        -:   24:
+        1:   25:    struct addrinfo hints{}, *res;
+        1:   26:    hints.ai_family = AF_INET;          // IPv4
+        1:   27:    hints.ai_socktype = SOCK_DGRAM;     // UDP
+        -:   28:
+        1:   29:    int status = getaddrinfo(server_ip, std::to_string(port).c_str(), &hints, &res);
+        1:   30:    if (status != 0) {
+    #####:   31:        std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
+    #####:   32:        return 1;
+        -:   33:    }
+        -:   34:
+        1:   35:    sockaddr_storage server_addr{};
+        1:   36:    std::memcpy(&server_addr, res->ai_addr, res->ai_addrlen);
+        1:   37:    socklen_t addr_len = res->ai_addrlen;
+        -:   38:
+        1:   39:    freeaddrinfo(res);  // Clean up
+        -:   40:
+        -:   41:
+        -:   42:    while (true) {
+        8:   43:        std::cout << "Enter command (DELIVER <MOLECULE> <AMOUNT> | EXIT): ";
+        8:   44:        std::string command;
+        8:   45:        std::getline(std::cin, command);
+        -:   46:
+        8:   47:        if (command == "EXIT") {
+        1:   48:            std::cout << "Exiting.\n";
+        1:   49:            break;
+        -:   50:        }
+        -:   51:
+        -:   52:        // Send the command to the server:
+        7:   53:        ssize_t sent = sendto(sock, command.c_str(), command.size(), 0,
+        -:   54:                              (sockaddr*)&server_addr, sizeof(server_addr));
+        7:   55:        if (sent < 0) {
+    #####:   56:            perror("sendto failed");
+    #####:   57:            break;
+        -:   58:        }
+        -:   59:
+        -:   60:        //Get response from the server:
+        7:   61:        char buffer[1024] = {0};
+        7:   62:        socklen_t len = sizeof(server_addr);
+        7:   63:        ssize_t received = recvfrom(sock, buffer, sizeof(buffer) - 1, 0,
+        -:   64:                                    (sockaddr*)&server_addr, &len);
+        7:   65:        if (received < 0) {
+    #####:   66:            perror("recvfrom failed");
+    #####:   67:            break;
+        -:   68:        }
+        -:   69:
+        7:   70:        buffer[received] = '\0';
+        7:   71:        std::cout << "[Server Reply] " << buffer << "\n";
+       15:   72:    }
+        -:   73:
+        1:   74:    close(sock);
+        1:   75:    return 0;
+        -:   76:}
