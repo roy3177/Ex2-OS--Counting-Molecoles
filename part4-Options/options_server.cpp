@@ -133,6 +133,10 @@ int main(int argc, char* argv[]) {
             max_fd = udp_fd;
         }
 
+        FD_SET(STDIN_FILENO, &readfds);
+        if (STDIN_FILENO > max_fd) {
+            max_fd = STDIN_FILENO;
+        }
 
         // Adding all the clients:
         for (int client_fd : clients) {
@@ -204,7 +208,7 @@ int main(int argc, char* argv[]) {
                     need_H = 2 * amount;
                     need_O = 1 * amount;
                 }
-                else if (molecule == "CARBON DIOXIDE") {
+                else if (molecule == "CARBON_DIOXIDE") {
                     need_C = 1 * amount;
                     need_O = 2 * amount;
                 } 
@@ -246,6 +250,42 @@ int main(int argc, char* argv[]) {
             }
         }
 
+        if (FD_ISSET(STDIN_FILENO, &readfds)) {
+            std::string line;
+            std::getline(std::cin, line);
+            std::istringstream iss(line);
+
+            std::string cmd, drink;
+            if (!(iss >> cmd >> drink) || cmd != "GEN") {
+                std::cout << "[ERROR] Invalid command. Use: GEN <SOFT DRINK|VODKA|CHAMPAGNE>\n";
+                continue;  
+            }
+
+            int can_make = 0;
+            if (drink == "SOFT" || drink == "SOFT_DRINK" || drink == "SOFTDRINK") {
+                unsigned long long h = hydrogen_count / 14;
+                unsigned long long o = oxygen_count / 9;
+                unsigned long long c = carbon_count / 7;
+                can_make = std::min({h, o, c});
+                std::cout << "Can make " << can_make << " SOFT DRINK(s)\n";
+            } else if (drink == "VODKA") {
+                unsigned long long h = hydrogen_count / 20;
+                unsigned long long o = oxygen_count / 8;
+                unsigned long long c = carbon_count / 8;
+                can_make = std::min({h, o, c});
+                std::cout << "Can make " << can_make << " VODKA(s)\n";
+            } else if (drink == "CHAMPAGNE") {
+                unsigned long long h = hydrogen_count / 8;
+                unsigned long long o = oxygen_count / 4;
+                unsigned long long c = carbon_count / 3;
+                can_make = std::min({h, o, c});
+                std::cout << "Can make " << can_make << " CHAMPAGNE(s)\n";
+            } else {
+                std::cout << "[ERROR] Unknown drink type.\n";
+            }
+        }
+
+
 
         for (int client_fd : clients) {
             if (FD_ISSET(client_fd, &readfds)) {
@@ -270,7 +310,6 @@ int main(int argc, char* argv[]) {
 
                 // Checking if the client request to exit;
                 if (command == "EXIT") {
-                    std::cout << "[INFO] Client requested EXIT.\n";
                     close(client_fd);
                     disconnected.insert(client_fd);
                     continue;

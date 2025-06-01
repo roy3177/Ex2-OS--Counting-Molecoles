@@ -1,0 +1,94 @@
+        -:    0:Source:atom_supplier.cpp
+        -:    0:Graph:atom_supplier.gcno
+        -:    0:Data:atom_supplier.gcda
+        -:    0:Runs:3
+        -:    1:#include <iostream>
+        -:    2:#include <cstring>
+        -:    3:#include <unistd.h>
+        -:    4:#include <arpa/inet.h>
+        -:    5:#include <sys/socket.h>
+        -:    6:#include <netdb.h> // Required for getaddrinfo
+        -:    7:
+        3:    8:int main(int argc, char *argv[])
+        -:    9:{
+        -:   10:
+        -:   11:    // With the address of the server and our port:
+        3:   12:    if (argc != 3)
+        -:   13:    {
+        1:   14:        std::cerr << "Usage: " << argv[0] << " <host> <port>\n";
+        1:   15:        return 1;
+        -:   16:    }
+        -:   17:
+        2:   18:    const char *server_ip = argv[1]; // Our server's address
+        2:   19:    const char *port_str = argv[2];  // Our port (as string for getaddrinfo)
+        -:   20:
+        -:   21:    // Define the server's address using getaddrinfo:
+        2:   22:    struct addrinfo hints{}, *res;
+        2:   23:    hints.ai_family = AF_INET;       // IPv4 only
+        2:   24:    hints.ai_socktype = SOCK_STREAM; // TCP
+        -:   25:
+        2:   26:    int status = getaddrinfo(server_ip, port_str, &hints, &res);
+        2:   27:    if (status != 0)
+        -:   28:    {
+    #####:   29:        std::cerr << "getaddrinfo error: " << gai_strerror(status) << "\n";
+    #####:   30:        return 1;
+        -:   31:    }
+        -:   32:
+        -:   33:    // Creating the socket TCP:
+        2:   34:    int sock = socket(res->ai_family, res->ai_socktype, res->ai_protocol);
+        2:   35:    if (sock < 0)
+        -:   36:    {
+    #####:   37:        perror("socket failed");
+    #####:   38:        freeaddrinfo(res);
+    #####:   39:        return 1;
+        -:   40:    }
+        -:   41:
+        2:   42:    if (connect(sock, res->ai_addr, res->ai_addrlen) < 0)
+        -:   43:    {
+    #####:   44:        perror("Connection failed");
+    #####:   45:        freeaddrinfo(res);
+    #####:   46:        return 1;
+        -:   47:    }
+        -:   48:
+        2:   49:    std::cout << "Connected to server at " << server_ip << ":" << port_str << "\n";
+        2:   50:    freeaddrinfo(res); // We no longer need the addrinfo result
+        -:   51:
+        -:   52:    while (true)
+        -:   53:    {
+        -:   54:        // Request a command from the user:
+        8:   55:        std::cout << "Enter command (e.g., ADD HYDROGEN 3 or EXIT): ";
+        8:   56:        std::string command;
+        8:   57:        std::getline(std::cin, command);
+        -:   58:
+        -:   59:        // EXIT --> Terminates the program:
+        8:   60:        if (command == "EXIT")
+        -:   61:        {
+        1:   62:            std::cout << "Closing connection. Bye!\n";
+        1:   63:            break;
+        -:   64:        }
+        -:   65:
+        7:   66:        command += '\n'; // Adding newline to match server expectations
+        -:   67:
+        -:   68:        // Sending command to the server:
+        7:   69:        ssize_t bytes_sent = send(sock, command.c_str(), command.size(), 0);
+        7:   70:        if (bytes_sent < 0)
+        -:   71:        {
+    #####:   72:            perror("Send failed");
+    #####:   73:            break;
+        -:   74:        }
+        -:   75:
+        -:   76:        // Getting response from the server:
+        7:   77:        char buffer[1024] = {0};
+        7:   78:        ssize_t bytes_received = recv(sock, buffer, sizeof(buffer) - 1, 0);
+        7:   79:        if (bytes_received <= 0) {
+        1:   80:            std::cerr << "Failed to receive response from server\n";
+        1:   81:            break;
+        -:   82:        }
+        6:   83:        buffer[bytes_received] = '\0';
+        6:   84:        std::cout << "Server returned: " << buffer << "\n";
+        -:   85:
+       14:   86:            }
+        -:   87:
+        2:   88:    close(sock);
+        2:   89:    return 0;
+        -:   90:}
